@@ -1,0 +1,254 @@
+import java.math.BigInteger;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Random;
+import java.util.Scanner;
+
+/**
+ * DSA (Digital Signature Algorithm) Implementation
+ * Cairo University - Advanced Cryptography Lab Assignment 5
+ *
+ * Input : a message number (e.g. 32)
+ * Output: all keys, generated signature, and verification result
+ */
+public class DSA {
+
+    // ─────────────────────────────────────────────
+    //  Utility: Square-and-Multiply modular exponentiation
+    // ─────────────────────────────────────────────
+    /**
+     * Computes base^exp mod m using the square-and-multiply method.
+     */
+    public static BigInteger squareAndMultiply(BigInteger base, BigInteger exp, BigInteger mod) {
+        BigInteger result = BigInteger.ONE;
+        base = base.mod(mod);
+
+        while (exp.compareTo(BigInteger.ZERO) > 0) {
+            // If current bit is 1, multiply result by base
+            if (exp.testBit(0)) {
+                result = result.multiply(base).mod(mod);
+            }
+            exp = exp.shiftRight(1);        // shift right (divide by 2)
+            base = base.multiply(base).mod(mod); // square the base
+        }
+        return result;
+    }
+
+    // ─────────────────────────────────────────────
+    //  Utility: SHA-1 hash → BigInteger
+    // ─────────────────────────────────────────────
+    public static BigInteger sha1Hash(BigInteger message) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] hashBytes = md.digest(message.toByteArray());
+            return new BigInteger(1, hashBytes); // positive BigInteger
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-1 not available", e);
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    //  KEY GENERATION
+    // ─────────────────────────────────────────────
+    /**
+     * Generates DSA domain parameters (p, q, alpha) and key pair (d, beta).
+     *
+     * Standard sizes: p ~ 1024-bit, q ~ 160-bit.
+     * For demonstration we use smaller primes that still satisfy the spec.
+     */
+    public static BigInteger[] generateKeys(Random rng) {
+        System.out.println("=== KEY GENERATION ===");
+
+        // Step 1: Generate a prime q (160-bit range for demo: use 160-bit certainty)
+        BigInteger q = BigInteger.probablePrime(160, rng);
+        System.out.println("1. Prime q (160-bit) = " + q);
+
+        // Step 2: Generate prime p such that q | (p-1)
+        //         p = k*q + 1 for some k, and p must be prime
+        BigInteger p;
+        BigInteger k;
+        do {
+            // Choose a random k so that p is in the 1024-bit range
+            k = new BigInteger(864, rng).add(BigInteger.ONE); // 864 + 160 ≈ 1024 bits
+            p = k.multiply(q).add(BigInteger.ONE);
+        } while (!p.isProbablePrime(80));
+        System.out.println("2. Prime p (1024-bit) = " + p);
+
+        // Step 3: Find generator alpha of order q in Z*_p
+        //         alpha = h^((p-1)/q) mod p  for any h where result != 1
+        BigInteger pMinus1 = p.subtract(BigInteger.ONE);
+        BigInteger exp = pMinus1.divide(q);          // (p-1)/q
+        BigInteger alpha;
+        BigInteger h = BigInteger.TWO;
+        do {
+            alpha = squareAndMultiply(h, exp, p);
+            h = h.add(BigInteger.ONE);
+        } while (alpha.equals(BigInteger.ONE));
+        System.out.println("3. Generator alpha (ord = q) = " + alpha);
+
+        // Step 4: Choose private key d, 0 < d < q
+        BigInteger d;
+        do {
+            d = new BigInteger(q.bitLength(), rng);
+        } while (d.compareTo(BigInteger.ZERO) <= 0 || d.compareTo(q) >= 0);
+        System.out.println("4. Private key d = " + d);
+
+        // Step 5: Compute public key beta = alpha^d mod p
+        BigInteger beta = squareAndMultiply(alpha, d, p);
+        System.out.println("5. Public key beta = alpha^d mod p = " + beta);
+
+        System.out.println("\nPublic  key k_pub  = (p, q, alpha, beta)");
+        System.out.println("Private key k_priv = (d)");
+        System.out.println();
+
+        // Return: [p, q, alpha, beta, d]
+        return new BigInteger[]{p, q, alpha, beta, d};
+    }
+
+    // ─────────────────────────────────────────────
+    //  SIGNATURE GENERATION
+    // ─────────────────────────────────────────────
+    /**
+     * Generates DSA signature (r, s) for a message x.
+     *
+     * @param x     message as BigInteger
+     * @param p     large prime
+     * @param q     prime divisor of (p-1)
+     * @param alpha generator
+     * @param d     private key
+     * @param rng   random source
+     * @return {r, s}
+     */
+    public static BigInteger[] generateSignature(
+            BigInteger x, BigInteger p, BigInteger q,
+            BigInteger alpha, BigInteger d, Random rng) {
+
+        System.out.println("=== SIGNATURE GENERATION ===");
+
+        // Hash the message
+        BigInteger hashX = sha1Hash(x).mod(q);
+        System.out.println("SHA-1(message) mod q = " + hashX);
+
+        BigInteger r, s, kE;
+
+        do {
+            // Step 1: Choose ephemeral key kE, 0 < kE < q
+            do {
+                kE = new BigInteger(q.bitLength(), rng);
+            } while (kE.compareTo(BigInteger.ZERO) <= 0 || kE.compareTo(q) >= 0);
+            System.out.println("1. Ephemeral key k_E = " + kE);
+
+            // Step 2: r = (alpha^kE mod p) mod q
+            r = squareAndMultiply(alpha, kE, p).mod(q);
+            System.out.println("2. r = (alpha^k_E mod p) mod q = " + r);
+
+            // Step 3: s = (SHA(x) + d*r) * kE^-1 mod q
+            BigInteger kEInv = kE.modInverse(q);
+            s = hashX.add(d.multiply(r)).multiply(kEInv).mod(q);
+            System.out.println("3. s = (SHA(x) + d*r) * k_E^-1 mod q = " + s);
+
+        } while (r.equals(BigInteger.ZERO) || s.equals(BigInteger.ZERO));
+
+        System.out.println("\nSignature (r, s) = (" + r + ", " + s + ")");
+        System.out.println();
+        return new BigInteger[]{r, s};
+    }
+
+    // ─────────────────────────────────────────────
+    //  SIGNATURE VERIFICATION
+    // ─────────────────────────────────────────────
+    /**
+     * Verifies a DSA signature (r, s) for message x.
+     *
+     * @param x     original message
+     * @param r     first signature component
+     * @param s     second signature component
+     * @param p     large prime
+     * @param q     prime divisor of (p-1)
+     * @param alpha generator
+     * @param beta  public key
+     * @return true if signature is valid
+     */
+    public static boolean verifySignature(
+            BigInteger x, BigInteger r, BigInteger s,
+            BigInteger p, BigInteger q, BigInteger alpha, BigInteger beta) {
+
+        System.out.println("=== SIGNATURE VERIFICATION ===");
+
+        // Step 1: w = s^-1 mod q
+        BigInteger w = s.modInverse(q);
+        System.out.println("1. w = s^-1 mod q = " + w);
+
+        // Hash the message
+        BigInteger hashX = sha1Hash(x).mod(q);
+        System.out.println("   SHA-1(message) mod q = " + hashX);
+
+        // Step 2: u1 = w * SHA(x) mod q
+        BigInteger u1 = w.multiply(hashX).mod(q);
+        System.out.println("2. u1 = w * SHA(x) mod q = " + u1);
+
+        // Step 3: u2 = w * r mod q
+        BigInteger u2 = w.multiply(r).mod(q);
+        System.out.println("3. u2 = w * r mod q = " + u2);
+
+        // Step 4: v = (alpha^u1 * beta^u2 mod p) mod q
+        BigInteger part1 = squareAndMultiply(alpha, u1, p);
+        BigInteger part2 = squareAndMultiply(beta, u2, p);
+        BigInteger v = part1.multiply(part2).mod(p).mod(q);
+        System.out.println("4. v = (alpha^u1 * beta^u2 mod p) mod q = " + v);
+
+        // Step 5: Check v == r
+        boolean valid = v.equals(r);
+        System.out.println("5. v == r ?  →  " + v + " == " + r + "  →  " + (valid ? "✔ VALID SIGNATURE" : "✘ INVALID SIGNATURE"));
+        return valid;
+    }
+
+    // ─────────────────────────────────────────────
+    //  MAIN
+    // ─────────────────────────────────────────────
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        Random rng = new Random();
+
+        System.out.println("");
+        System.out.println("║      DSA (Digital Signature Algorithm)    ║");
+        System.out.println();
+
+        // ── Input ──
+        System.out.print("Enter message number (e.g. 32): ");
+        BigInteger message = scanner.nextBigInteger();
+        System.out.println();
+
+        // ── Key Generation ──
+        BigInteger[] keys = generateKeys(rng);
+        BigInteger p     = keys[0];
+        BigInteger q     = keys[1];
+        BigInteger alpha = keys[2];
+        BigInteger beta  = keys[3];
+        BigInteger d     = keys[4];
+
+        // ── Signature Generation ──
+        BigInteger[] sig = generateSignature(message, p, q, alpha, d, rng);
+        BigInteger r = sig[0];
+        BigInteger s = sig[1];
+
+        // ── Signature Verification ──
+        boolean valid = verifySignature(message, r, s, p, q, alpha, beta);
+
+        // ── Summary ──
+        System.out.println();
+        System.out.println("══════════════ SUMMARY ══════════════");
+        System.out.println("Message          : " + message);
+        System.out.println("Public key k_pub : (p, q, alpha, beta)");
+        System.out.println("  p     = " + p);
+        System.out.println("  q     = " + q);
+        System.out.println("  alpha = " + alpha);
+        System.out.println("  beta  = " + beta);
+        System.out.println("Private key k_pr : d = " + d);
+        System.out.println("Signature (r, s) : (" + r + ", " + s + ")");
+        System.out.println("Verification     : " + (valid ? " Valid" : " Invalid"));
+        System.out.println("══════════════════════════════════════");
+
+        scanner.close();
+    }
+}
