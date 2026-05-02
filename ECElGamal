@@ -1,0 +1,278 @@
+import java.util.*;
+
+public class ECElGamal {
+
+    // ================= POINT =================
+    static class Point {
+        long x, y;
+        boolean infinity;
+
+        Point() { infinity = true; }
+
+        Point(long x, long y) {
+            this.x = x;
+            this.y = y;
+            this.infinity = false;
+        }
+
+        @Override
+        public String toString() {
+            if (infinity) return "Point at Infinity";
+            return "(" + x + ", " + y + ")";
+        }
+    }
+
+    // ================= CURVE PARAMS =================
+    static long p, a, b;
+
+    // =========================================================
+    // FUNCTION 1 — Check the number is prime
+    // =========================================================
+    static boolean isPrime(long n) {
+        if (n < 2) return false;
+        if (n == 2) return true;
+        if (n % 2 == 0) return false;
+        for (long i = 3; i * i <= n; i += 2)
+            if (n % i == 0) return false;
+        return true;
+    }
+
+    // =========================================================
+    // FUNCTION 2 — Choose (a, b) for the curve equation
+    //              Ensures non-singular curve: 4a³ + 27b² ≠ 0 (mod p)
+    // =========================================================
+    static void chooseAB(Random r) {
+        while (true) {
+            a = r.nextInt((int) p);
+            b = r.nextInt((int) p);
+            long discriminant = (4 * modPow(a, 3, p) + 27 * modPow(b, 2, p)) % p;
+            if (discriminant != 0) break; // non-singular curve
+        }
+    }
+
+    // =========================================================
+    // FUNCTION 3 — Choose a primitive (generator) point (x, y)
+    //              A primitive point G has order equal to #E
+    // =========================================================
+    static Point choosePrimitivePoint(long order) {
+        for (long x = 0; x < p; x++) {
+            long rhs = (modPow(x, 3, p) + a * x % p + b) % p;
+            for (long y = 0; y < p; y++) {
+                if (y * y % p == rhs) {
+                    Point G = new Point(x, y);
+                    // Check G is primitive: order * G = infinity
+                    if (mul(order, G).infinity)
+                        return G;
+                }
+            }
+        }
+        return new Point(); // infinity (fallback)
+    }
+
+    // =========================================================
+    // FUNCTION 4 — Calculate the order #E of the curve
+    //              (number of points including point at infinity)
+    // =========================================================
+    static long calculateOrder() {
+        long count = 1; // start at 1 for the point at infinity
+        for (long x = 0; x < p; x++) {
+            long rhs = (modPow(x, 3, p) + a * x % p + b) % p;
+            for (long y = 0; y < p; y++) {
+                if (y * y % p == rhs)
+                    count++;
+            }
+        }
+        return count;
+    }
+
+    // =========================================================
+    // FUNCTION 5 — Point addition and doubling
+    // =========================================================
+    static Point add(Point P, Point Q) {
+        if (P.infinity) return Q;
+        if (Q.infinity) return P;
+
+        // P + (-P) = infinity
+        if (P.x == Q.x && (P.y + Q.y) % p == 0)
+            return new Point();
+
+        long m;
+
+        if (P.x == Q.x && P.y == Q.y) {
+            // Point doubling
+            m = (3 * P.x % p * P.x % p + a) % p * modInv(2 * P.y % p, p) % p;
+        } else {
+            // Point addition
+            long dy = (Q.y - P.y + p) % p;
+            long dx = (Q.x - P.x + p) % p;
+            m = dy * modInv(dx, p) % p;
+        }
+
+        long x3 = (m * m % p - P.x - Q.x + 2 * p) % p;
+        long y3 = (m * (P.x - x3 + p) % p - P.y + p) % p;
+
+        return new Point(x3, y3);
+    }
+
+    // =========================================================
+    // FUNCTION 6 — Double-and-Add Algorithm for Point Multiplication
+    // =========================================================
+    static Point mul(long k, Point P) {
+        Point R = new Point(); // identity (infinity)
+        Point Q = P;
+
+        while (k > 0) {
+            if ((k & 1) == 1)
+                R = add(R, Q); // add current bit
+            Q = add(Q, Q);     // double
+            k >>= 1;
+        }
+        return R;
+    }
+
+    // =========================================================
+    // FUNCTION 7 — Encryption
+    //   Input:  plaintext point M, generator G, public key Q, random k
+    //   Output: ciphertext pair (C1, C2)
+    // =========================================================
+    static Point[] encrypt(Point M, Point G, Point Q, long k) {
+        Point C1 = mul(k, G);             // C1 = k * G
+        Point C2 = add(M, mul(k, Q));     // C2 = M + k * Q
+        return new Point[]{C1, C2};
+    }
+
+    // =========================================================
+    // FUNCTION 8 — Decryption
+    //   Input:  ciphertext (C1, C2), private key d
+    //   Output: recovered plaintext point M
+    //   Math:   M = C2 - d*C1  (because d*C1 = d*k*G = k*Q)
+    // =========================================================
+    static Point decrypt(Point C1, Point C2, long d) {
+        Point dC1 = mul(d, C1);
+        Point negDC1 = new Point(dC1.x, (p - dC1.y) % p); // negate y
+        return add(C2, negDC1);
+    }
+
+    // =========================================================
+    // HELPER — Encode integer message to a curve point
+    // =========================================================
+    static Point encode(long m) {
+        for (long i = 0; i < p; i++) {
+            long x = (m + i) % p;
+            long rhs = (modPow(x, 3, p) + a * x % p + b) % p;
+            for (long y = 0; y < p; y++) {
+                if (y * y % p == rhs)
+                    return new Point(x, y);
+            }
+        }
+        return new Point(); // infinity (encoding failed)
+    }
+
+    // =========================================================
+    // HELPER — Modular inverse using Fermat's little theorem
+    // =========================================================
+    static long modInv(long x, long p) {
+        return modPow(((x % p) + p) % p, p - 2, p);
+    }
+
+    // =========================================================
+    // HELPER — Fast modular exponentiation (base^exp mod m)
+    // =========================================================
+    static long modPow(long base, long exp, long mod) {
+        long result = 1;
+        base %= mod;
+        while (exp > 0) {
+            if ((exp & 1) == 1) result = result * base % mod;
+            base = base * base % mod;
+            exp >>= 1;
+        }
+        return result;
+    }
+
+    // =========================================================
+    // MAIN
+    // =========================================================
+    public static void main(String[] args) {
+
+        Scanner sc = new Scanner(System.in);
+        Random r = new Random();
+
+        // ----- Input validation: must be a valid integer -----
+        System.out.print("Enter prime p: ");
+        long p_input;
+        try {
+            p_input = sc.nextLong();
+        } catch (InputMismatchException e) {
+            System.out.println("Error: Input is not a valid number.");
+            return;
+        }
+
+        // ----- FUNCTION 1: Prime check -----
+        if (!isPrime(p_input)) {
+            System.out.println("Error: " + p_input + " is not a prime number.");
+            return;
+        }
+        p = p_input;
+
+        // ----- FUNCTION 2: Choose (a, b) -----
+        chooseAB(r);
+        System.out.println("\n--- Curve Parameters ---");
+        System.out.println("Curve: y^2 = x^3 + " + a + "x + " + b + " (mod " + p + ")");
+
+        // ----- FUNCTION 4: Calculate order #E -----
+        long order = calculateOrder();
+        System.out.println("Order of curve #E = " + order);
+
+        // ----- FUNCTION 3: Choose primitive generator point G -----
+        Point G = choosePrimitivePoint(order);
+        if (G.infinity) {
+            System.out.println("Error: Could not find a primitive point on this curve.");
+            return;
+        }
+        System.out.println("Generator (primitive) point G = " + G);
+
+        // ----- Key generation -----
+        long d = r.nextInt((int)(order - 1)) + 1; // private key: 1 <= d < #E
+        Point Q = mul(d, G);                        // public key
+        System.out.println("\n--- Keys ---");
+        System.out.println("Private key d = " + d);
+        System.out.println("Public key  Q = " + Q);
+
+        // ----- Message input and encoding -----
+        System.out.print("\nEnter message (integer): ");
+        long m;
+        try {
+            m = sc.nextLong();
+        } catch (InputMismatchException e) {
+            System.out.println("Error: Message must be a valid integer.");
+            return;
+        }
+
+        Point M = encode(m);
+        if (M.infinity) {
+            System.out.println("Error: Could not encode message " + m + " onto the curve.");
+            return;
+        }
+        System.out.println("Encoded message point M = " + M);
+
+        // ----- FUNCTION 7: Encryption -----
+        long k = r.nextInt((int)(order - 1)) + 1;
+        Point[] C = encrypt(M, G, Q, k);
+        System.out.println("\n--- Encryption ---");
+        System.out.println("Random k = " + k);
+        System.out.println("C1 = k*G = " + C[0]);
+        System.out.println("C2 = M + k*Q = " + C[1]);
+
+        // ----- FUNCTION 8: Decryption -----
+        Point M2 = decrypt(C[0], C[1], d);
+        System.out.println("\n--- Decryption ---");
+        System.out.println("Decrypted point M' = " + M2);
+
+        // ----- Verify -----
+        boolean success = !M2.infinity && M2.x == M.x && M2.y == M.y;
+        System.out.println("\n--- Result ---");
+        System.out.println("Original  M  = " + M);
+        System.out.println("Recovered M' = " + M2);
+        System.out.println("SUCCESS = " + success);
+    }
+}
